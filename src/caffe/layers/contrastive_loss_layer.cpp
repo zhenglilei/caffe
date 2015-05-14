@@ -12,17 +12,17 @@ template <typename Dtype>
 void ContrastiveLossLayer<Dtype>::LayerSetUp(
   const vector<Blob<Dtype>*>& bottom, const vector<Blob<Dtype>*>& top) {
   LossLayer<Dtype>::LayerSetUp(bottom, top);
-  CHECK_EQ(bottom[0]->channels(), bottom[1]->channels());
-  CHECK_EQ(bottom[0]->height(), 1);
+  CHECK_EQ(bottom[0]->channels(), bottom[1]->channels()); // dimensions of a_i and b_i should be equal
+  CHECK_EQ(bottom[0]->height(), 1); // not picture, so height and width are all 1
   CHECK_EQ(bottom[0]->width(), 1);
   CHECK_EQ(bottom[1]->height(), 1);
   CHECK_EQ(bottom[1]->width(), 1);
-  CHECK_EQ(bottom[2]->channels(), 1);
+  CHECK_EQ(bottom[2]->channels(), 1); // label in bottom[2], the channel is also 1
   CHECK_EQ(bottom[2]->height(), 1);
   CHECK_EQ(bottom[2]->width(), 1);
-  diff_.Reshape(bottom[0]->num(), bottom[0]->channels(), 1, 1);
-  diff_sq_.Reshape(bottom[0]->num(), bottom[0]->channels(), 1, 1);
-  dist_sq_.Reshape(bottom[0]->num(), 1, 1, 1);
+  diff_.Reshape(bottom[0]->num(), bottom[0]->channels(), 1, 1); // difference between all a_i and b_i
+  diff_sq_.Reshape(bottom[0]->num(), bottom[0]->channels(), 1, 1); // s
+  dist_sq_.Reshape(bottom[0]->num(), 1, 1, 1); // distance between a_i and b_i
   // vector of ones used to sum along channels
   summer_vec_.Reshape(bottom[0]->channels(), 1, 1, 1);
   for (int i = 0; i < bottom[0]->channels(); ++i)
@@ -38,44 +38,44 @@ void ContrastiveLossLayer<Dtype>::Forward_cpu(
       count,
       bottom[0]->cpu_data(),  // a
       bottom[1]->cpu_data(),  // b
-      diff_.mutable_cpu_data());  // a_i-b_i
-  const int channels = bottom[0]->channels();
+      diff_.mutable_cpu_data());  // a - b    all a_i and b_i, a long difference vector
+  const int channels = bottom[0]->channels(); // dimension of each vector 
   Dtype margin = this->layer_param_.contrastive_loss_param().margin();
   Dtype loss(0.0);
   for (int i = 0; i < bottom[0]->num(); ++i) {
     dist_sq_.mutable_cpu_data()[i] = caffe_cpu_dot(channels,
-        diff_.cpu_data() + (i*channels), diff_.cpu_data() + (i*channels));
+        diff_.cpu_data() + (i*channels), diff_.cpu_data() + (i*channels));  // Euclidean distance of the i-th pair
     if (static_cast<int>(bottom[2]->cpu_data()[i])) {  // similar pairs
       loss += dist_sq_.cpu_data()[i];
     } else {  // dissimilar pairs
       loss += std::max(margin-dist_sq_.cpu_data()[i], Dtype(0.0));
     }
   }
-  loss = loss / static_cast<Dtype>(bottom[0]->num()) / Dtype(2);
-  top[0]->mutable_cpu_data()[0] = loss;
+  loss = loss / static_cast<Dtype>(bottom[0]->num()) / Dtype(2); // averaged by 2N
+  top[0]->mutable_cpu_data()[0] = loss; // the output at the top
 }
 
 template <typename Dtype>
 void ContrastiveLossLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
     const vector<bool>& propagate_down, const vector<Blob<Dtype>*>& bottom) {
   Dtype margin = this->layer_param_.contrastive_loss_param().margin();
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < 2; ++i) {   // for a_i and b_i, respectively
     if (propagate_down[i]) {
-      const Dtype sign = (i == 0) ? 1 : -1;
-      const Dtype alpha = sign * top[0]->cpu_diff()[0] /
-          static_cast<Dtype>(bottom[i]->num());
+      const Dtype sign = (i == 0) ? 1 : -1;  
+      const Dtype alpha = sign * top[0]->cpu_diff()[0] /    // cpu_diff is the gradient of current layer
+          static_cast<Dtype>(bottom[i]->num());             // relates to learning rate and the loss weights, see hpp
       int num = bottom[i]->num();
       int channels = bottom[i]->channels();
       for (int j = 0; j < num; ++j) {
         Dtype* bout = bottom[i]->mutable_cpu_diff();
-        if (static_cast<int>(bottom[2]->cpu_data()[j])) {  // similar pairs
+        if (static_cast<int>(bottom[2]->cpu_data()[j])) {  // similar pairs, grad = alpha*d
           caffe_cpu_axpby(
               channels,
               alpha,
               diff_.cpu_data() + (j*channels),
               Dtype(0.0),
               bout + (j*channels));
-        } else {  // dissimilar pairs
+        } else {  // dissimilar pairs, grad = -alpha*d for out-margin pairs
           if ((margin-dist_sq_.cpu_data()[j]) > Dtype(0.0)) {
             caffe_cpu_axpby(
                 channels,
@@ -84,7 +84,7 @@ void ContrastiveLossLayer<Dtype>::Backward_cpu(const vector<Blob<Dtype>*>& top,
                 Dtype(0.0),
                 bout + (j*channels));
           } else {
-            caffe_set(channels, Dtype(0), bout + (j*channels));
+            caffe_set(channels, Dtype(0), bout + (j*channels));  //otherwise, grad = 0
           }
         }
       }
